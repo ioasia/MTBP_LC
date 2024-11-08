@@ -4,6 +4,7 @@
 library(openxlsx)
 library(HGNChelper)
 library(ggplot2)
+library(ComplexHeatmap)
 
 
 # Function
@@ -96,6 +97,10 @@ proteomics_dia <-  read.xlsx('~/Downloads/LungCancer_project/data/43018_2021_259
 proteomics_dia_MS2 <- proteomics_dia[, c(1, grep('PG', colnames(proteomics_dia)))]
 proteomics_dia_MS2$GeneSymbol <- update.genes(genes = proteomics_dia_MS2$GeneSymbol, map = current_genes)
 
+# timsTOF data
+proteomics_timsTOF <-  read.delim('~/Downloads/MTBP_project/data/LC_n141_timsTOF_MS2_genecentric_updated.txt', sep = '\t')
+proteomics_timsTOF_norm <-  read.delim('~/Downloads/MTBP_project/data/LC_n141_timsTOF_MS2_genecentric_norm.txt', sep = '\t')
+
 
 # Remove NA
 sum(is.na(proteomics_tmt$GeneSymbol))
@@ -115,10 +120,9 @@ proteomics_dia_MS2$GeneSymbol <- NULL
 colnames(proteomics_dia_MS2) <- gsub('_PG.Quantity', '', colnames(proteomics_dia_MS2))
 
 # Normalize
-proteomics_dia_MS2 <- log10(proteomics_dia_MS2) 
-proteomics_dia_MS2 <- sweep(proteomics_dia_MS2, 1, apply(proteomics_dia_MS2, 1, mean, na.rm = TRUE), '-')
-proteomics_dia_MS2 <- sweep(proteomics_dia_MS2, 2, apply(proteomics_dia_MS2, 2, mean, na.rm = TRUE), '-')
-
+proteomics_dia_MS2 <- log2(proteomics_dia_MS2) 
+proteomics_dia_MS2_norm <- sweep(proteomics_dia_MS2, 1, apply(proteomics_dia_MS2, 1, mean, na.rm = TRUE), '-')
+proteomics_dia_MS2_norm <- sweep(proteomics_dia_MS2_norm, 2, apply(proteomics_dia_MS2_norm, 2, mean, na.rm = TRUE), '-')
 
 
 cells$GeneSymbol <-  update.genes(genes = cells$gene_symbol, map = current_genes)
@@ -129,8 +133,9 @@ cells <- cells[!is.na(cells$GeneSymbol), ]
 ## Overlap
 genes_per_cell <-  as.data.frame(table(cells$signature))
 genes_included <- lapply(list(cells$GeneSymbol, 
-                              rownames(proteomics_tmt),
-                              rownames(proteomics_dia_MS2),
+                              # rownames(proteomics_tmt),
+                              # rownames(proteomics_dia_MS2),
+                              rownames(proteomics_timsTOF_norm),
                               rownames(transcriptomics)), function(i) {
                           
                                 cells_included <- cells[cells$GeneSymbol %in% i, ]
@@ -141,7 +146,8 @@ merge.all <- function(i,j) merge(i,j, by = 'Var1', all = TRUE)
 
 genes_included_dt <- Reduce(f = merge.all, genes_included)
 genes_included_dt[is.na(genes_included_dt)] <- 0
-colnames(genes_included_dt) <- c('Cell_type', 'Init', 'TMT', 'DIA_MS2', 'RNA')
+# colnames(genes_included_dt) <- c('Cell_type', 'Init', 'TMT', 'DIA_MS2', 'RNA')
+colnames(genes_included_dt) <- c('Cell_type', 'Init', 'timsTOF', 'RNA')
 write.table(genes_included_dt, paste0(path_file, 'LC_marker_overlap.txt'), sep = '\t', row.names = FALSE)
 
 
@@ -166,14 +172,13 @@ dev.off()
 # mRNA - protein correlation
 cells_tocheck <- unique(cells$signature)
 
-
 # Known marker genes for lung cancer
-dt_list <- list('mRNA_tmt' = list('mRNA' = transcriptomics, 
-                       'tmt' = proteomics_tmt),
-                'tmt_dia' = list('tmt' = proteomics_tmt, 
-                                  'dia' = proteomics_dia_MS2))
+dt_list <- list(
+  # 'mRNA_tmt' = list('mRNA' = transcriptomics, 'tmt' = proteomics_tmt),
+  # 'tmt_dia' = list('tmt' = proteomics_tmt, 'dia' = proteomics_dia_MS2),
+  'mRNA_timsTOF' = list('mRNA' = transcriptomics, 'timsTOF' = proteomics_timsTOF_norm))
 
-dt_marker_cell_types_cor <- lapply(names(dt_list), function(k) {
+marker_cell_types_cor_dt <- lapply(names(dt_list), function(k) {
   
   dts <- dt_list[[k]]
   dt1 <- dts[[1]]
@@ -201,7 +206,7 @@ dt_marker_cell_types_cor <- lapply(names(dt_list), function(k) {
    
       res_cor <-  tryCatch(
         {
-          res <- cor.test(val1, val2)
+          res <- cor.test(val1, val2, method = 'spearman')
           c(res$estimate, res$p.value)
   
         }, error = function(cond) {
@@ -229,8 +234,83 @@ dt_marker_cell_types_cor <- lapply(names(dt_list), function(k) {
   
 
 merge.dt.cor <- function(i,j) merge(i,j, by = c( "cell_type", "marker"))
+marker_cell_types_cor_all_dt <- Reduce(f = merge.dt.cor, marker_cell_types_cor_dt)
 
-dt_marker_cell_types_cor_all <- Reduce(f = merge.dt.cor, dt_marker_cell_types_cor)
+marker_cell_types_cor_all_dt$overlap <- marker_cell_types_cor_all_dt$mRNA_timsTOF_n_overlap > ncol(transcriptomics)/2
+marker_cell_types_cor_all_dt$cor_thres <- marker_cell_types_cor_all_dt$mRNA_timsTOF_cor > 0.5
 
+
+marker_cell_types_cor_filt_dt <- marker_cell_types_cor_all_dt[marker_cell_types_cor_all_dt$overlap &
+                                                                marker_cell_types_cor_all_dt$cor_thres, ]
+
+
+
+# Plot
+genes_included_filt_plot <- as.data.frame(table(marker_cell_types_cor_filt_dt$cell_type))
+genes_included_filt_plot$Var1 <- factor(genes_included_filt_plot$Var1, levels = genes_included_dt$Cell_type[order(genes_included_dt$Init)])
+
+genes_included_filt_plot <- rbind.data.frame(genes_included_filt_plot, 
+                                             data.frame('Var1' = setdiff(levels(genes_included_filt_plot$Var1),
+                                                                genes_included_filt_plot$Var1),
+                                                        'Freq' = 0))
+
+p_overlap <- ggplot(genes_included_filt_plot, mapping = aes(x = Var1, y = Freq,  group = 1)) + 
+  geom_hline(yintercept = 0) + 
+  geom_line() + 
+  geom_point() + 
+  labs(x = '', y = '# markers', title = 'Spearman > 0.5, n >= 60 samples') + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        panel.grid.major = element_blank()) 
+
+pdf(paste0(path_save, 'LC_marker_overlap_thres.pdf'), width = 7, height = 5)
+plot(p_overlap)
+dev.off()
+
+cell_types_filt <- unique(dt_marker_cell_types_cor_filt$cell_type)
+
+load(paste0(path_file, 'LC_colours'))
+df_annot <- meta_data[, 'Proteome.Subtype', drop = FALSE]
+rownames(df_annot) <- meta_data$SampleID
+colnames(df_annot) <- 'Subtype'
+ht_annot <- HeatmapAnnotation(df = df_annot, col = list('Subtype' = col_list$CS), annotation_name_side = 'left')
+
+
+lapply(cell_types_filt, function(i) {
+
+  markers <- dt_marker_cell_types_cor_filt$marker[dt_marker_cell_types_cor_filt$cell_type == i]
+  
+  heatmap_df <- proteomics_timsTOF_norm[markers, rownames(df_annot) ,drop = FALSE]
+  
+  if(length(markers) == 1) {
+    cluster_columns_log <- FALSE
+    cluster_rows_log <- FALSE
+  } else {
+    cluster_columns_log <- FALSE
+    cluster_rows_log <- TRUE
+    }
+  ht_marker <- Heatmap(heatmap_df,
+                       heatmap_legend_param = gpar(title = 'norm. MS2 Intensity'),
+                       # column_split = df_annot$Subtype, 
+                       # row_split = c(rep('a', 4), rep('b', 3), 'c', 'd'),
+                       cluster_columns = cluster_columns_log,
+                       cluster_rows = cluster_rows_log,
+                       clustering_distance_rows = 'spearman',
+                       # clustering_distance_columns = 'spearman', 
+                       clustering_method_rows  = 'ward.D2',
+                       # clustering_method_columns = 'ward.D2',
+                       row_title = ' ',
+                       column_title = paste0(i, ', n = ',nrow(heatmap_df)),
+                       show_column_names = FALSE,
+                       row_names_side = 'left', 
+                       top_annotation = ht_annot)
+  
+  
+  pdf(file = paste0(path_save, 'LC_heatmap_markers_', i, '.pdf'), width = 10,
+      height = sqrt(length(markers)) * 2 + 1)
+  draw(ht_marker, auto_adjust = FALSE,  padding = unit(c(2, 2, 2, 2), "mm"))
+  dev.off()
+  
+})
 
 

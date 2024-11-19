@@ -1,7 +1,4 @@
 #-------------------------based on xCell markers -------------------------------
-rm(list = ls())
-gc()
-
 # load the required libraries
 library(openxlsx)
 library(HGNChelper)
@@ -15,6 +12,8 @@ library(ggpubr)
 library(cowplot)
 library(tidyestimate)
 library(Cairo)
+
+# all form of prepossessing, harmonization in the gene symbol across datasets, and normalization for timsTOF are done already.
 
 # step 1: ---------------read the data------------------------------------------
 # read the meta data of the early stage cohort, 2021
@@ -92,7 +91,7 @@ ggplot(genes_included_plot, mapping = aes(x = signature, y = value, group = vari
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5), 
         panel.grid.major = element_blank())
 
-# step 4: ---------------mRNA - protein correlation-----------------------------
+# step 4: mRNA - protein correlation-------------------------------------------
 signatures <- unique(cells2markers$signature)
 
 # Data-set pair for correlation calculation
@@ -153,7 +152,7 @@ dt_marker_cell_types_cor <- do.call(rbind, lapply(signatures, function(i) {
 rownames(dt_marker_cell_types_cor) <- 1:nrow(dt_marker_cell_types_cor)
 
 
-# step 5: ------------significant correlations--------------------------
+# step 5: significant correlations----------------------------------------------
 ggplot(dt_marker_cell_types_cor, aes(x = cor_mRNA_timsTOF)) +
   geom_histogram(binwidth = 0.05) + 
   theme_bw()
@@ -165,32 +164,32 @@ cormRNA_timsTOF <- dt_marker_cell_types_cor %>%
 # Pairwise correlation based on timeTOF quantification for each signature 
 correlation_results <- lapply(signatures, function(sig) {
   
-  # Step 2: Get genes associated with the current signature
+  # Get genes associated with the current signature
   genes_for_signature <- cormRNA_timsTOF %>%
     filter(signatures == sig) %>%
     pull(marker)
   
-  # Step 3: Check if these genes are in the proteomics dataset
+  # Check if these genes are in the proteomics dataset
   proteomics_genes <- intersect(genes_for_signature, rownames(proteomics_timsTOF))
   
   if (length(proteomics_genes) > 1) {  # Ensure that at least two genes are available for correlation
-    # Step 4: Extract corresponding quantification data from proteomics_timsTOF
+    # Extract corresponding quantification from proteomics_timsTOF
     proteomics_data <- proteomics_timsTOF[proteomics_genes, intersect(colnames(proteomics_timsTOF), colnames(transcriptomics))]
     
-    # Step 5: Compute pairwise correlation matrix (Pearson correlation)
+    # Compute pairwise correlation matrix (Pearson correlation)
     cor_matrix <- cor(t(proteomics_data), method = "pearson", use = "pairwise.complete.obs")
     
-    # Step 6: Return correlation matrix as a result
+    # Return the result
     list(Signature = sig, CorrelationMatrix = cor_matrix)
   } else {
-    return(NULL)  # Return NULL if not enough genes to compute correlation
+    return(NULL)  
   }
 })
 
-# Filter out if no correlation 
+# Filter out no correlations 
 correlation_results <- Filter(Negate(is.null), correlation_results)
 
-# step 6:--------------plot the correlation heatmap----------------------------- 
+# step 6: plot the correlation heatmap and expression heatmaps-----------------
 SampleData <- subset(meta_data, SampleID %in% intersect(colnames(proteomics_timsTOF), colnames(transcriptomics)))
 SampleData <- as.data.frame(SampleData)
 rownames(SampleData) <- SampleData$SampleID
@@ -230,13 +229,13 @@ if (length(correlation_results) > 0) {
       column_title_gp = gpar(fontsize = 15, fontface = "bold")
     )
     
-    # Draw the heatmap and get the row order
+    # Draw the heatmap and get the row order for the expression heatmap
     cor_heatmap <- draw(cor_heatmap)
     ordered_genes_indices <- row_order(cor_heatmap)
     ordered_genes <- rownames(corSignature$CorrelationMatrix)[ordered_genes_indices]
     
     
-    # order the proteomics data to match the correlation heatmap
+    # order to match the correlation heatmap
     proteomics_data <- proteomics_timsTOF[ordered_genes, intersect(colnames(proteomics_timsTOF), colnames(transcriptomics))]
     proteomics_data <- proteomics_data[, match(rownames(SampleData), colnames(proteomics_data))]
     scaleData <- as.matrix(t(scale(t(proteomics_data))))
@@ -291,7 +290,7 @@ for (i in 1:length(list_plot)) {
   
 }
 
-# step 7: ---------------GSVA analysis-----------------------------------------
+# step 7: GSVA analysis-----------------------------------------
 # ssGSEA based on the full transcriptomics data
 transcriptomics2ssgseaFull <-transcriptomics
 transcriptomics2ssgseaFull <- t(scale(t(transcriptomics2ssgseaFull)))
@@ -321,4 +320,6 @@ Sample_median_mRNA_ssGSEAscores <- apply(mRNA_ssGSEAscores, 2, median)
 # save the important data for further analysis and visualization
 rm(list = ls())
 gc()
+
+#------I did the same analysis for single cell atlas----------------------------
 
